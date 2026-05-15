@@ -3,11 +3,13 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, StatusBar, Image, T
 import { Colors } from '../../theme/colors';
 import { Users, Search, MessageSquarePlus, Archive } from 'lucide-react-native';
 import { useGroupStore } from '../../store/useGroupStore';
+import { useInvoiceStore } from '../../store/useInvoiceStore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function GroupListScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { groups } = useGroupStore();
+  const allInvoices = useInvoiceStore((state) => state.invoices);
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState('Tất cả');
 
@@ -57,7 +59,12 @@ export default function GroupListScreen({ navigation }: any) {
         
         <View style={styles.chatFooter}>
           <Text style={styles.lastMessage} numberOfLines={1}>
-            Tổng chi tiêu: 0đ
+            Tổng chi tiêu: {
+              allInvoices
+                .filter(inv => inv.groupId === item.id)
+                .reduce((sum, inv) => sum + inv.amount, 0)
+                .toLocaleString()
+            }đ
           </Text>
           {item.members.length > 1 && (
             <View style={styles.badge}>

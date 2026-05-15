@@ -6,6 +6,9 @@ import { useGroupStore } from '../../store/useGroupStore';
 import { useInvoiceStore } from '../../store/useInvoiceStore';
 import QRCode from 'react-native-qrcode-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { db, auth } from '../../services/firebase';
+import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+import { useEffect } from 'react';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -25,6 +28,45 @@ export default function GroupDetailScreen({ route, navigation }: any) {
   const totalSpent = useMemo(() => {
     return invoices.reduce((sum, inv) => sum + inv.amount, 0);
   }, [invoices]);
+
+  const userBalance = useMemo(() => {
+    if (!group || !auth.currentUser) return 0;
+    const userId = auth.currentUser.uid;
+    const memberCount = group.members.length || 1;
+    
+    return invoices.reduce((balance, inv) => {
+      const share = inv.amount / memberCount;
+      if (inv.paidBy === userId) {
+        return balance + (inv.amount - share);
+      } else {
+        return balance - share;
+      }
+    }, 0);
+  }, [invoices, group, auth.currentUser]);
+
+  useEffect(() => {
+    if (!groupId) return;
+
+    const q = query(
+      collection(db, 'groups', groupId, 'invoices'),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedInvoices = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        date: doc.data().createdAt?.toDate() || new Date(),
+      })) as any[];
+      
+      // Update store with new invoices for this group
+      // We should merge with existing invoices from other groups
+      const otherGroupsInvoices = useInvoiceStore.getState().invoices.filter(inv => inv.groupId !== groupId);
+      useInvoiceStore.getState().setInvoices([...fetchedInvoices, ...otherGroupsInvoices]);
+    });
+
+    return () => unsubscribe();
+  }, [groupId]);
 
   if (!group) return null;
 
@@ -82,7 +124,12 @@ export default function GroupDetailScreen({ route, navigation }: any) {
             </View>
             <View style={[styles.summaryItem, styles.borderLeft]}>
               <Text style={styles.summaryLabel}>Số dư của bạn</Text>
-              <Text style={[styles.summaryValue, { color: Colors.success }]}>+0đ</Text>
+              <Text style={[
+                styles.summaryValue, 
+                { color: userBalance >= 0 ? Colors.success : Colors.danger }
+              ]}>
+                {userBalance > 0 ? '+' : ''}{userBalance.toLocaleString()}đ
+              </Text>
             </View>
           </View>
         </View>
