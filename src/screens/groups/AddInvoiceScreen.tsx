@@ -1,10 +1,23 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, TextInput, TouchableOpacity, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, SafeAreaView, TextInput, TouchableOpacity, Alert, ActivityIndicator, ScrollView, Image } from 'react-native';
 import { Colors } from '../../theme/colors';
-import { ChevronLeft, Receipt, DollarSign, Save, Camera } from 'lucide-react-native';
+import { ChevronLeft, Receipt, DollarSign, Save, Camera, Image as ImageIcon, X, Check } from 'lucide-react-native';
 import { auth, db } from '../../services/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
 import { useInvoiceStore } from '../../store/useInvoiceStore';
+import * as ImagePicker from 'expo-image-picker';
+
+interface Member {
+  id: string;
+  name: string;
+}
+
+interface InvoiceItem {
+  id: string;
+  name: string;
+  price: number;
+  sharedBy: string[];
+}
 
 export default function AddInvoiceScreen({ route, navigation }: any) {
   const { groupId } = route.params;
@@ -14,115 +27,183 @@ export default function AddInvoiceScreen({ route, navigation }: any) {
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [base64Image, setBase64Image] = useState<string | null>(null);
+  
+  const [groupMembers, setGroupMembers] = useState<Member[]>([]);
+  const [items, setItems] = useState<InvoiceItem[]>([]);
 
-  const handleSave = async () => {
-    if (!title.trim() || !amount.trim()) {
-      Alert.alert('Lỗi', 'Vui lòng nhập tên hóa đơn và số tiền');
-      return;
+  useEffect(() => {
+    fetchMembers();
+  }, []);
+
+  const fetchMembers = async () => {
+    try {
+      const groupSnap = await getDoc(doc(db, 'groups', groupId));
+      if (groupSnap.exists()) {
+        const memberIds = groupSnap.data().members || [];
+        const membersData: Member[] = [];
+        for (const mId of memberIds) {
+          const userSnap = await getDoc(doc(db, 'users', mId));
+          if (userSnap.exists()) {
+            membersData.push({ id: mId, name: userSnap.data().name });
+          }
+        }
+        setGroupMembers(membersData);
+      }
+    } catch (error) { console.error(error); }
+  };
+
+  const pickImage = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.8,
+      base64: true,
+      exif: false,
+    });
+    if (!result.canceled) {
+      setImageUri(result.assets[0].uri);
+      setBase64Image(result.assets[0].base64 || null);
     }
+  };
 
-    const totalAmount = parseFloat(amount);
-    if (isNaN(totalAmount)) {
-      Alert.alert('Lỗi', 'Số tiền không hợp lệ');
-      return;
+  const takePhoto = async () => {
+    let result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      quality: 0.8,
+      base64: true,
+      exif: false,
+    });
+    if (!result.canceled) {
+      setImageUri(result.assets[0].uri);
+      setBase64Image(result.assets[0].base64 || null);
     }
+  };
 
+  const processOCR = async () => {
+    if (!base64Image) return;
     setLoading(true);
     try {
-      const invoiceData = {
-        groupId,
-        title: title.trim(),
-        amount: totalAmount,
-        paidBy: user?.uid,
-        paidByName: user?.displayName || 'Thành viên',
-        createdAt: serverTimestamp(),
-      };
+      const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+      const prompt = "Đọc hóa đơn này và trả về JSON: {\"items\": [{\"name\": \"tên món\", \"price\": 50000}]}. Chỉ lấy các món lẻ.";
+      
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: "image/jpeg", data: base64Image } }] }]
+        })
+      });
 
-      // 1. Save to Firestore
-      const docRef = await addDoc(collection(db, 'groups', groupId, 'invoices'), invoiceData);
+      const data = await response.json();
+      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (responseText) {
+        const cleanJson = responseText.replace(/```json|```/g, '').trim();
+        const result = JSON.parse(cleanJson);
+        const formattedItems = result.items.map((item: any) => ({
+          id: Math.random().toString(),
+          name: item.name,
+          price: item.price,
+          sharedBy: groupMembers.map(m => m.id)
+        }));
+        setItems(formattedItems);
+        const total = formattedItems.reduce((sum: number, item: any) => sum + item.price, 0);
+        setAmount(total.toString());
+      }
+    } catch (error) {
+      Alert.alert('Lỗi', 'AI không thể đọc ảnh này.');
+    } finally { setLoading(false); }
+  };
 
-      // 2. Save to local store
-      addInvoiceLocal({
-        id: docRef.id,
-        ...invoiceData,
-        date: new Date(),
-      } as any);
+  const toggleMemberForItem = (itemId: string, memberId: string) => {
+    setItems(items.map(item => {
+      if (item.id === itemId) {
+        const isShared = item.sharedBy.includes(memberId);
+        return { ...item, sharedBy: isShared ? item.sharedBy.filter(id => id !== memberId) : [...item.sharedBy, memberId] };
+      }
+      return item;
+    }));
+  };
 
-      Alert.alert('Thành công', 'Đã thêm hóa đơn mới');
-      navigation.goBack();
-    } catch (error: any) {
-      Alert.alert('Lỗi', error.message);
-    } finally {
-      setLoading(false);
+  const handleSave = async () => {
+    if (!title || !amount) {
+      Alert.alert('Lỗi', 'Vui lòng nhập đủ thông tin');
+      return;
     }
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'groups', groupId, 'invoices'), {
+        groupId, title, amount: parseFloat(amount),
+        paidBy: user?.uid, items: items, createdAt: serverTimestamp(),
+      });
+      navigation.goBack();
+    } catch (error) { Alert.alert('Lỗi', 'Không thể lưu'); }
+    finally { setLoading(false); }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <ChevronLeft color="white" size={28} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Thêm hóa đơn</Text>
-        <View style={{ width: 40 }} />
+        <TouchableOpacity onPress={() => navigation.goBack()}><ChevronLeft color="white" size={28} /></TouchableOpacity>
+        <Text style={styles.headerTitle}>Chia tiền chi tiết</Text>
+        <View style={{ width: 28 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.ocrPlaceholder}>
-          <TouchableOpacity style={styles.ocrButton}>
-            <Camera color={Colors.primary} size={32} />
-            <Text style={styles.ocrText}>Quét hóa đơn (Sắp ra mắt)</Text>
-          </TouchableOpacity>
-          <Text style={styles.ocrHint}>Dành cho Thành viên 2 tích hợp OCR</Text>
-        </View>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        {!imageUri ? (
+          <View style={styles.pickerContainer}>
+            <TouchableOpacity style={styles.pickerButton} onPress={takePhoto}>
+              <Camera color={Colors.primary} size={30} />
+              <Text style={styles.pickerText}>Chụp ảnh</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.pickerButton, { marginLeft: 10 }]} onPress={pickImage}>
+              <ImageIcon color={Colors.primary} size={30} />
+              <Text style={styles.pickerText}>Chọn ảnh</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.previewBox}>
+            <Image source={{ uri: imageUri }} style={styles.image} />
+            <TouchableOpacity style={styles.removeImg} onPress={() => {setImageUri(null); setItems([]);}}><X color="white" size={20} /></TouchableOpacity>
+            <TouchableOpacity style={styles.ocrBtn} onPress={processOCR} disabled={loading}>
+              {loading ? <ActivityIndicator color="white" /> : <Text style={styles.ocrBtnText}>Quét hóa đơn</Text>}
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={styles.form}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Tên hóa đơn</Text>
-            <View style={styles.inputContainer}>
-              <Receipt color={Colors.dark.textSecondary} size={20} style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder="Ví dụ: Ăn tối, Đi siêu thị..."
-                placeholderTextColor={Colors.dark.textSecondary}
-                value={title}
-                onChangeText={setTitle}
-              />
+          <Text style={styles.label}>Tên hóa đơn</Text>
+          <View style={styles.inputWrap}>
+            <Receipt color="#64748b" size={20} style={{marginRight: 10}} />
+            <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="Vd: Ăn lẩu..." placeholderTextColor="#475569" />
+          </View>
+
+          {items.map((item) => (
+            <View key={item.id} style={styles.itemCard}>
+              <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+                <Text style={styles.itemName}>{item.name}</Text>
+                <Text style={styles.itemPrice}>{item.price.toLocaleString()}đ</Text>
+              </View>
+              <View style={styles.memberList}>
+                {groupMembers.map(m => (
+                  <TouchableOpacity key={m.id} style={[styles.chip, item.sharedBy.includes(m.id) && styles.chipActive]} onPress={() => toggleMemberForItem(item.id, m.id)}>
+                    <Text style={[styles.chipText, item.sharedBy.includes(m.id) && {color: 'white'}]}>{m.name.split(' ').pop()}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
+          ))}
+
+          <Text style={styles.label}>Tổng tiền (đ)</Text>
+          <View style={styles.inputWrap}>
+            <DollarSign color="#64748b" size={20} style={{marginRight: 10}} />
+            <TextInput style={styles.input} value={amount} onChangeText={setAmount} keyboardType="numeric" />
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Số tiền (đ)</Text>
-            <View style={styles.inputContainer}>
-              <DollarSign color={Colors.dark.textSecondary} size={20} style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder="0"
-                placeholderTextColor={Colors.dark.textSecondary}
-                value={amount}
-                onChangeText={setAmount}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          <View style={styles.infoBox}>
-            <Text style={styles.infoText}>Mặc định: Bạn trả trước và chia đều cho cả nhóm.</Text>
-          </View>
-
-          <TouchableOpacity 
-            style={[styles.saveButton, loading && styles.disabledButton]} 
-            onPress={handleSave}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="white" />
-            ) : (
-              <>
-                <Text style={styles.saveButtonText}>Lưu hóa đơn</Text>
-                <Save color="white" size={20} />
-              </>
-            )}
+          <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={loading}>
+            <Text style={styles.saveBtnText}>Lưu & Tính Nợ</Text>
+            <Save color="white" size={20} />
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -131,117 +212,29 @@ export default function AddInvoiceScreen({ route, navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.dark.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingVertical: 12,
-    backgroundColor: Colors.dark.surface,
-  },
-  backButton: {
-    padding: 8,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: 'white',
-  },
-  content: {
-    padding: 24,
-  },
-  ocrPlaceholder: {
-    backgroundColor: 'rgba(36, 129, 204, 0.1)',
-    borderRadius: 20,
-    padding: 32,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: Colors.primary,
-    borderStyle: 'dashed',
-    marginBottom: 32,
-  },
-  ocrButton: {
-    alignItems: 'center',
-    opacity: 0.6,
-  },
-  ocrText: {
-    color: Colors.primary,
-    fontWeight: 'bold',
-    fontSize: 16,
-    marginTop: 12,
-  },
-  ocrHint: {
-    color: Colors.dark.textSecondary,
-    fontSize: 12,
-    marginTop: 8,
-  },
-  form: {
-    width: '100%',
-  },
-  inputGroup: {
-    marginBottom: 24,
-  },
-  label: {
-    fontSize: 14,
-    color: Colors.dark.textSecondary,
-    marginBottom: 8,
-    marginLeft: 4,
-    fontWeight: 'bold',
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.dark.surface,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: Colors.dark.border,
-  },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
-    height: 56,
-    color: 'white',
-    fontSize: 16,
-  },
-  infoBox: {
-    backgroundColor: Colors.dark.surface,
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 24,
-    borderLeftWidth: 4,
-    borderLeftColor: Colors.primary,
-  },
-  infoText: {
-    color: Colors.dark.textSecondary,
-    fontSize: 14,
-  },
-  saveButton: {
-    backgroundColor: Colors.primary,
-    borderRadius: 12,
-    height: 56,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  disabledButton: {
-    opacity: 0.7,
-  },
-  saveButtonText: {
-    color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
+  container: { flex: 1, backgroundColor: '#0f172a' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: '#1e293b' },
+  headerTitle: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  scrollContent: { padding: 20 },
+  pickerContainer: { flexDirection: 'row', marginBottom: 20 },
+  pickerButton: { flex: 1, height: 100, borderStyle: 'dashed', borderWidth: 1, borderColor: '#334155', borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1e293b' },
+  pickerText: { color: '#94a3b8', marginTop: 8, fontSize: 12 },
+  previewBox: { height: 200, borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
+  image: { width: '100%', height: '100%' },
+  removeImg: { position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 5 },
+  ocrBtn: { position: 'absolute', bottom: 15, alignSelf: 'center', backgroundColor: Colors.primary, paddingHorizontal: 20, paddingVertical: 8, borderRadius: 20 },
+  ocrBtnText: { color: 'white', fontWeight: 'bold' },
+  form: { gap: 15 },
+  label: { color: '#94a3b8', fontSize: 14, fontWeight: 'bold' },
+  inputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e293b', paddingHorizontal: 15, borderRadius: 12, height: 50 },
+  input: { flex: 1, color: 'white' },
+  itemCard: { backgroundColor: '#1e293b', padding: 15, borderRadius: 12, borderLeftWidth: 4, borderLeftColor: Colors.primary },
+  itemName: { color: 'white', fontWeight: 'bold' },
+  itemPrice: { color: Colors.primary, fontWeight: 'bold' },
+  memberList: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
+  chip: { backgroundColor: '#0f172a', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 15, borderWidth: 1, borderColor: '#334155' },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { color: '#94a3b8', fontSize: 11 },
+  saveBtn: { backgroundColor: Colors.primary, height: 55, borderRadius: 15, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 10 },
+  saveBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' }
 });
