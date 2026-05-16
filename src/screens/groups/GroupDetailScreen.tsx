@@ -1,7 +1,7 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Share, Image, Dimensions, FlatList } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Share, Image, Dimensions, FlatList, Modal } from 'react-native';
 import { Colors } from '../../theme/colors';
-import { ChevronLeft, Share2, Users, Receipt, CreditCard, UserPlus } from 'lucide-react-native';
+import { ChevronLeft, Share2, Users, Receipt, CreditCard, UserPlus, QrCode, X } from 'lucide-react-native';
 import { useGroupStore } from '../../store/useGroupStore';
 import { useInvoiceStore } from '../../store/useInvoiceStore';
 import QRCode from 'react-native-qrcode-svg';
@@ -15,6 +15,7 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 export default function GroupDetailScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
   const { groupId } = route.params;
+  const [showQRModal, setShowQRModal] = useState(false);
   
   const groups = useGroupStore((state) => state.groups);
   const group = groups.find(g => g.id === groupId);
@@ -107,10 +108,48 @@ export default function GroupDetailScreen({ route, navigation }: any) {
           <Text style={styles.headerTitle} numberOfLines={1}>{group.name}</Text>
         </View>
 
-        <TouchableOpacity onPress={onShare} style={styles.headerIconButton}>
-          <Share2 color={Colors.dark.text} size={24} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row' }}>
+          <TouchableOpacity onPress={() => setShowQRModal(true)} style={styles.headerIconButton}>
+            <QrCode color={Colors.dark.text} size={24} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onShare} style={styles.headerIconButton}>
+            <Share2 color={Colors.dark.text} size={24} />
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {/* QR Code Modal */}
+      <Modal
+        visible={showQRModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowQRModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <TouchableOpacity 
+              style={styles.closeModalBtn}
+              onPress={() => setShowQRModal(false)}
+            >
+              <X color={Colors.dark.textSecondary} size={24} />
+            </TouchableOpacity>
+            
+            <Text style={styles.modalTitle}>Quét mã để tham gia</Text>
+            <Text style={styles.modalSubtitle}>Cho bạn bè quét mã này để tham gia nhóm {group.name}</Text>
+            
+            <View style={styles.modalQrWrapper}>
+              <QRCode
+                value={group.inviteCode}
+                size={SCREEN_WIDTH * 0.6}
+                color="#000000"
+                backgroundColor="#FFFFFF"
+                ecl="H"
+              />
+            </View>
+            <Text style={styles.modalInviteCode}>{group.inviteCode}</Text>
+          </View>
+        </View>
+      </Modal>
 
       <ScrollView 
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 100 }]}
@@ -132,6 +171,13 @@ export default function GroupDetailScreen({ route, navigation }: any) {
               </Text>
             </View>
           </View>
+          <TouchableOpacity 
+            style={styles.debtButton}
+            onPress={() => navigation.navigate('Debt Summary', { groupId })}
+          >
+            <CreditCard color={Colors.primary} size={18} />
+            <Text style={styles.debtButtonText}>Báo cáo nợ & Thanh toán</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.section}>
@@ -223,7 +269,6 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     paddingHorizontal: 8,
     gap: 8,
   },
@@ -274,6 +319,21 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: 'bold',
     color: Colors.dark.text,
+  },
+  debtButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 122, 255, 0.1)',
+    marginTop: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 8,
+  },
+  debtButtonText: {
+    color: Colors.primary,
+    fontWeight: 'bold',
+    fontSize: 15,
   },
   section: {
     marginBottom: 32,
@@ -452,4 +512,51 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 17,
   },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 24,
+    padding: 30,
+    width: '100%',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  closeModalBtn: {
+    position: 'absolute',
+    top: 15,
+    right: 15,
+    padding: 5,
+  },
+  modalTitle: {
+    color: 'white',
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginBottom: 10,
+    marginTop: 10,
+  },
+  modalSubtitle: {
+    color: Colors.dark.textSecondary,
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 30,
+    paddingHorizontal: 20,
+  },
+  modalQrWrapper: {
+    padding: 20,
+    backgroundColor: 'white',
+    borderRadius: 24,
+    marginBottom: 20,
+  },
+  modalInviteCode: {
+    color: Colors.primary,
+    fontSize: 28,
+    fontWeight: 'bold',
+    letterSpacing: 4,
+  }
 });

@@ -4,12 +4,14 @@ import { Colors } from '../../theme/colors';
 import { Users, ChevronLeft, Save, Camera } from 'lucide-react-native';
 import { useGroupStore } from '../../store/useGroupStore';
 import * as ImagePicker from 'expo-image-picker';
+import { auth, db } from '../../services/firebase';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 export default function CreateGroupScreen({ navigation }: any) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [imageUri, setImageUri] = useState<string | null>(null);
-  const addGroup = useGroupStore((state) => state.addGroup);
+  const [loading, setLoading] = useState(false);
 
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -31,25 +33,45 @@ export default function CreateGroupScreen({ navigation }: any) {
     }
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!name.trim()) {
       Alert.alert('Lỗi', 'Vui lòng nhập tên nhóm');
       return;
     }
 
-    const newGroup = {
-      id: Math.random().toString(36).substring(7),
-      name,
-      description,
-      imageUri: imageUri || undefined,
-      createdBy: 'me',
-      members: ['me'],
-      inviteCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-      createdAt: new Date(),
-    };
+    if (!auth.currentUser) {
+      Alert.alert('Lỗi', 'Bạn chưa đăng nhập');
+      return;
+    }
 
-    addGroup(newGroup);
-    navigation.goBack();
+    setLoading(true);
+
+    try {
+      const groupId = Math.random().toString(36).substring(7);
+      const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      const userId = auth.currentUser.uid;
+
+      const newGroup = {
+        id: groupId,
+        name,
+        description,
+        imageUri: imageUri || null,
+        createdBy: userId,
+        members: [userId],
+        inviteCode: inviteCode,
+        createdAt: serverTimestamp(),
+      };
+
+      // Save to Firebase (this will trigger onSnapshot in GroupListScreen)
+      await setDoc(doc(db, 'groups', groupId), newGroup);
+      
+      navigation.goBack();
+    } catch (error) {
+      console.error("Error creating group: ", error);
+      Alert.alert('Lỗi', 'Không thể tạo nhóm lúc này');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -104,9 +126,9 @@ export default function CreateGroupScreen({ navigation }: any) {
             />
           </View>
 
-          <TouchableOpacity style={styles.createButton} onPress={handleCreate}>
-            <Text style={styles.createButtonText}>Tạo nhóm</Text>
-            <Save color="white" size={20} />
+          <TouchableOpacity style={styles.createButton} onPress={handleCreate} disabled={loading}>
+            <Text style={styles.createButtonText}>{loading ? 'Đang tạo...' : 'Tạo nhóm'}</Text>
+            {!loading && <Save color="white" size={20} />}
           </TouchableOpacity>
         </View>
       </ScrollView>

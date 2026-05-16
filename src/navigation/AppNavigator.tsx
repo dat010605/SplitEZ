@@ -12,6 +12,8 @@ import GroupListScreen from '../screens/groups/GroupListScreen';
 import CreateGroupScreen from '../screens/groups/CreateGroupScreen';
 import GroupDetailScreen from '../screens/groups/GroupDetailScreen';
 import AddInvoiceScreen from '../screens/groups/AddInvoiceScreen';
+import ScanQRScreen from '../screens/groups/ScanQRScreen';
+import DebtSummaryScreen from '../screens/groups/DebtSummaryScreen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
 import AccountSettingsScreen from '../screens/profile/AccountSettingsScreen';
 
@@ -69,6 +71,8 @@ const MainStack = () => (
     <Stack.Screen name="Main" component={TabNavigator} options={{ headerShown: false }} />
     <Stack.Screen name="Create Group" component={CreateGroupScreen} options={{ title: 'Nhóm mới' }} />
     <Stack.Screen name="Group Detail" component={GroupDetailScreen} options={{ headerShown: false }} />
+    <Stack.Screen name="Scan QR" component={ScanQRScreen} options={{ headerShown: false }} />
+    <Stack.Screen name="Debt Summary" component={DebtSummaryScreen} options={{ headerShown: false }} />
     <Stack.Screen name="Add Invoice" component={AddInvoiceScreen} options={{ headerShown: false }} />
     <Stack.Screen name="Account Settings" component={AccountSettingsScreen} options={{ headerShown: false }} />
   </Stack.Navigator>

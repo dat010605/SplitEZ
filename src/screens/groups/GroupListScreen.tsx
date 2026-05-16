@@ -1,17 +1,45 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, StatusBar, Image, TextInput, ScrollView } from 'react-native';
 import { Colors } from '../../theme/colors';
-import { Users, Search, MessageSquarePlus, Archive } from 'lucide-react-native';
+import { QrCode, Search, Users, MessageSquarePlus, Archive } from 'lucide-react-native';
 import { useGroupStore } from '../../store/useGroupStore';
+import { useAuthStore } from '../../store/useAuthStore';
 import { useInvoiceStore } from '../../store/useInvoiceStore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { db, auth } from '../../services/firebase';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 
 export default function GroupListScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
-  const { groups } = useGroupStore();
+  const { user } = useAuthStore();
+  const { groups, setGroups } = useGroupStore();
   const allInvoices = useInvoiceStore((state) => state.invoices);
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState('Tất cả');
+
+  useEffect(() => {
+    if (!user) return;
+    
+    const q = query(
+      collection(db, 'groups'),
+      where('members', 'array-contains', user.uid)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedGroups = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate() || new Date(),
+      })) as any[];
+      
+      // Sort by createdAt descending locally
+      fetchedGroups.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      
+      setGroups(fetchedGroups);
+    });
+
+    return () => unsubscribe();
+  }, [user?.uid]);
 
   const tabs = ['Tất cả', 'Cá nhân', 'Nhóm'];
 
@@ -83,6 +111,9 @@ export default function GroupListScreen({ navigation }: any) {
       {/* SPLITEZ Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>SPLITEZ</Text>
+        <TouchableOpacity style={styles.headerIcon} onPress={() => navigation.navigate('Scan QR')}>
+          <QrCode color="white" size={24} />
+        </TouchableOpacity>
       </View>
 
       {/* Search Bar */}
