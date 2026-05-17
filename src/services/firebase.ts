@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+// @ts-ignore - getReactNativePersistence may not be in the typings
 import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
@@ -20,6 +21,7 @@ const app = initializeApp(firebaseConfig);
 
 // Initialize Auth with AsyncStorage for persistence in React Native/Expo
 export const auth = initializeAuth(app, {
+  // @ts-ignore - Firebase 11 typings sometimes omit this export but it exists at runtime
   persistence: getReactNativePersistence(ReactNativeAsyncStorage)
 });
 

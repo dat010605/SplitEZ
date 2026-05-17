@@ -2,14 +2,42 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Image, ScrollView, Alert, Switch, ActivityIndicator } from 'react-native';
 import { Colors } from '../../theme/colors';
 import { Settings, LogOut, Bell, User, Camera, ChevronRight } from 'lucide-react-native';
-import { auth } from '../../services/firebase';
-import { signOut, updateProfile, updatePassword } from 'firebase/auth';
+import { auth, db } from '../../services/firebase';
+import { signOut, updateProfile } from 'firebase/auth';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
 
 export default function ProfileScreen({ navigation }: any) {
   const user = auth.currentUser;
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [loading, setLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (user) {
+      getDoc(doc(db, 'users', user.uid)).then(docSnap => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.notificationsEnabled !== undefined) {
+            setNotificationsEnabled(data.notificationsEnabled);
+          }
+        }
+      });
+    }
+  }, [user]);
+
+  const toggleNotifications = async (value: boolean) => {
+    setNotificationsEnabled(value);
+    if (user) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid), {
+          notificationsEnabled: value
+        });
+      } catch (e) {
+        console.error('Lỗi khi cập nhật cài đặt thông báo:', e);
+        Alert.alert('Lỗi', 'Không thể lưu cài đặt thông báo');
+      }
+    }
+  };
 
   const handleLogout = async () => {
     Alert.alert(
@@ -114,7 +142,7 @@ export default function ProfileScreen({ navigation }: any) {
             </View>
             <Switch
               value={notificationsEnabled}
-              onValueChange={setNotificationsEnabled}
+              onValueChange={toggleNotifications}
               trackColor={{ false: '#3e3e3e', true: Colors.primary }}
               thumbColor={notificationsEnabled ? '#fff' : '#f4f3f4'}
             />

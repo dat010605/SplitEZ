@@ -10,11 +10,21 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
 export async function registerForPushNotificationsAsync() {
   let token;
+
+  // expo-notifications push token is NOT supported in Expo Go from SDK 53+
+  // Only run in a real development build or production
+  const isExpoGo = Constants.appOwnership === 'expo';
+  if (isExpoGo) {
+    console.log('Push Notifications are not supported in Expo Go (SDK 53+). Use a development build.');
+    return;
+  }
 
   if (Platform.OS === 'android') {
     Notifications.setNotificationChannelAsync('default', {

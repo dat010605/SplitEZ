@@ -6,6 +6,7 @@ import { auth, db } from '../../services/firebase';
 import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
 import { useInvoiceStore } from '../../store/useInvoiceStore';
 import * as ImagePicker from 'expo-image-picker';
+import { sendPushNotification } from '../../services/notifications';
 
 interface Member {
   id: string;
@@ -58,61 +59,154 @@ export default function AddInvoiceScreen({ route, navigation }: any) {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
-      quality: 0.8,
+      quality: 0.5,
       base64: true,
       exif: false,
     });
     if (!result.canceled) {
-      setImageUri(result.assets[0].uri);
-      setBase64Image(result.assets[0].base64 || null);
+      const uri = result.assets[0].uri;
+      const base64 = result.assets[0].base64 || null;
+      setImageUri(uri);
+      setBase64Image(base64);
+      if (base64) {
+        processOCR(base64);
+      }
     }
   };
 
   const takePhoto = async () => {
     let result = await ImagePicker.launchCameraAsync({
       allowsEditing: true,
-      quality: 0.8,
+      quality: 0.5,
       base64: true,
       exif: false,
     });
     if (!result.canceled) {
-      setImageUri(result.assets[0].uri);
-      setBase64Image(result.assets[0].base64 || null);
+      const uri = result.assets[0].uri;
+      const base64 = result.assets[0].base64 || null;
+      setImageUri(uri);
+      setBase64Image(base64);
+      if (base64) {
+        processOCR(base64);
+      }
     }
   };
 
-  const processOCR = async () => {
-    if (!base64Image) return;
+  const processOCR = async (directBase64?: string) => {
+    const imgData = directBase64 || base64Image;
+    if (!imgData) return;
     setLoading(true);
     try {
-      const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-      const prompt = "Đọc hóa đơn này và trả về JSON: {\"items\": [{\"name\": \"tên món\", \"price\": 50000}]}. Chỉ lấy các món lẻ.";
+      // BƯỚC 1: Dùng OCR.space để lấy chữ từ ảnh
+      console.log("Đang quét chữ bằng OCR.space...");
+      const formData = new FormData();
+      formData.append('base64Image', `data:image/jpeg;base64,${imgData}`);
+      formData.append('apikey', 'K82361817488957'); 
+      formData.append('language', 'vie');
+      formData.append('isOverlayRequired', 'false');
+      formData.append('detectOrientation', 'true');
+      formData.append('scale', 'true');
+
+      const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
+        method: 'POST',
+        body: formData
+      });
+      const ocrResult = await ocrResponse.json();
       
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      if (ocrResult.OCRExitCode !== 1) {
+        // Gửi toàn bộ phản hồi lỗi lên Firestore để debug
+        await addDoc(collection(db, 'debug_logs'), {
+          error: "OCR.space Error",
+          ocrResult: JSON.stringify(ocrResult),
+          timestamp: serverTimestamp(),
+          device: 'Android APK'
+        });
+        throw new Error(ocrResult.ErrorMessage || "Máy chủ OCR từ chối xử lý ảnh");
+      }
+
+      const rawText = ocrResult.ParsedResults?.[0]?.ParsedText;
+      if (!rawText) throw new Error("Không tìm thấy chữ trong ảnh");
+
+      console.log("Chữ đã quét được:", rawText);
+
+      // BƯỚC 2: Dùng Gemini để sắp xếp lại chữ thành JSON (chỉ gửi text nên cực nhẹ)
+      const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+      if (!apiKey) throw new Error("Thiếu Gemini API Key");
+
+      const prompt = `Đây là nội dung quét từ một hóa đơn: "${rawText}". 
+      Hãy trích xuất danh sách các món đồ và giá tiền. 
+      CHỈ trả về JSON theo cấu trúc: {"items": [{"name": "tên món", "price": 50000}]}. 
+      Giá tiền phải là số nguyên. Không thêm văn bản khác.`;
+
+      const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: "image/jpeg", data: base64Image } }] }]
+          contents: [{ parts: [{ text: prompt }] }]
         })
       });
 
-      const data = await response.json();
-      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const aiData = await aiResponse.json();
+      let responseText = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      let finalItems = [];
+
       if (responseText) {
-        const cleanJson = responseText.replace(/```json|```/g, '').trim();
-        const result = JSON.parse(cleanJson);
-        const formattedItems = result.items.map((item: any) => ({
+        try {
+          const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+          const cleanJson = jsonMatch ? jsonMatch[0] : responseText.replace(/```json|```/g, '').trim();
+          const result = JSON.parse(cleanJson);
+          if (result.items && Array.isArray(result.items)) {
+            finalItems = result.items;
+          }
+        } catch (e) {
+          console.log("AI Parse error, falling back to Regex");
+        }
+      }
+
+      // BƯỚC 3: Nếu AI thất bại, dùng Regex để tự lọc (Dự phòng)
+      if (finalItems.length === 0) {
+        console.log("Sử dụng Regex dự phòng...");
+        const lines = rawText.split('\n');
+        for (let line of lines) {
+          // Tìm các dòng có dạng: Tên món ... [Số tiền]
+          const match = line.match(/^(.+?)\s+([\d.,]{4,})\s*$/);
+          if (match) {
+            const name = match[1].trim();
+            const price = parseInt(match[2].replace(/[.,]/g, ''));
+            if (price > 1000) { // Chỉ lấy các món > 1000đ để tránh lấy nhầm số lượng
+              finalItems.push({ name, price });
+            }
+          }
+        }
+      }
+
+      if (finalItems.length > 0) {
+        const formattedItems = finalItems.map((item: any) => ({
           id: Math.random().toString(),
-          name: item.name,
-          price: item.price,
+          name: item.name || 'Món không tên',
+          price: Number(item.price) || 0,
           sharedBy: groupMembers.map(m => m.id)
         }));
         setItems(formattedItems);
         const total = formattedItems.reduce((sum: number, item: any) => sum + item.price, 0);
         setAmount(total.toString());
+      } else {
+        Alert.alert('Kết quả quét', `Đã đọc được chữ nhưng không tách được món ăn. Nội dung đọc được:\n\n${rawText.substring(0, 200)}...`);
       }
-    } catch (error) {
-      Alert.alert('Lỗi', 'AI không thể đọc ảnh này.');
+    } catch (error: any) {
+      console.log("OCR Error:", error);
+      // Tự động gửi lỗi lên Firestore để mình (AI) kiểm tra
+      try {
+        await addDoc(collection(db, 'debug_logs'), {
+          error: error.message || 'Unknown error',
+          stack: error.stack || '',
+          timestamp: serverTimestamp(),
+          device: 'Android APK'
+        });
+      } catch (e) { console.log("Không thể gửi log lỗi"); }
+
+      Alert.alert('Lỗi quét hóa đơn', `Chi tiết: ${error.message}. Bạn có thể thử nhập tay hóa đơn.`);
     } finally { setLoading(false); }
   };
 
@@ -137,6 +231,42 @@ export default function AddInvoiceScreen({ route, navigation }: any) {
         groupId, title, amount: parseFloat(amount),
         paidBy: user?.uid, items: items, createdAt: serverTimestamp(),
       });
+      
+      // Gửi thông báo cho các thành viên khác trong nhóm
+      try {
+        const groupSnap = await getDoc(doc(db, 'groups', groupId));
+        if (groupSnap.exists()) {
+          const groupData = groupSnap.data();
+          const memberIds = groupData.members || [];
+          const groupName = groupData.name || 'Nhóm';
+          
+          for (const mId of memberIds) {
+            if (mId !== user?.uid) {
+              const userSnap = await getDoc(doc(db, 'users', mId));
+              if (userSnap.exists()) {
+                const userData = userSnap.data();
+                const pushToken = userData.pushToken;
+                const notificationsEnabled = userData.notificationsEnabled !== false;
+                
+                if (pushToken && notificationsEnabled) {
+                  console.log(`Đang gửi thông báo tới token: ${pushToken}`);
+                  await sendPushNotification(
+                    pushToken,
+                    `🧾 Hóa đơn mới: ${groupName}`,
+                    `Một hóa đơn mới "${title}" trị giá ${parseFloat(amount).toLocaleString()}đ vừa được thêm vào nhóm.`,
+                    { groupId }
+                  );
+                } else {
+                  console.log(`Không gửi thông báo cho ${mId}: token=${!!pushToken}, enabled=${notificationsEnabled}`);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.log('Lỗi gửi thông báo:', err);
+      }
+
       navigation.goBack();
     } catch (error) { Alert.alert('Lỗi', 'Không thể lưu'); }
     finally { setLoading(false); }
@@ -166,7 +296,7 @@ export default function AddInvoiceScreen({ route, navigation }: any) {
           <View style={styles.previewBox}>
             <Image source={{ uri: imageUri }} style={styles.image} />
             <TouchableOpacity style={styles.removeImg} onPress={() => {setImageUri(null); setItems([]);}}><X color="white" size={20} /></TouchableOpacity>
-            <TouchableOpacity style={styles.ocrBtn} onPress={processOCR} disabled={loading}>
+            <TouchableOpacity style={styles.ocrBtn} onPress={() => processOCR()} disabled={loading}>
               {loading ? <ActivityIndicator color="white" /> : <Text style={styles.ocrBtnText}>Quét hóa đơn</Text>}
             </TouchableOpacity>
           </View>
@@ -180,6 +310,7 @@ export default function AddInvoiceScreen({ route, navigation }: any) {
           </View>
 
           {items.map((item) => (
+            // @ts-ignore - React 19 type issue with View key
             <View key={item.id} style={styles.itemCard}>
               <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                 <Text style={styles.itemName}>{item.name}</Text>
